@@ -1,0 +1,819 @@
+ProgramUnits:
+ populateItems:
+PROCEDURE POPULATE_ITEMS(mname IN varchar2) IS
+	scr_description	varchar2(100);
+	test_var varchar2(10);;
+	scr_part_number	varchar2(100);
+BEGIN	
+	get_module_information(mname, scr_description, scr_part_number);
+--Begin Fix SCR 101 -- Madhu -- 09-Apr-2012
+	IF Name_In('parameter.work_type') = 'VIEW' THEN
+		:DISPLAY_ITEM_BLOCK.FORM_DESC := substr(scr_description,1,instr(scr_description,'/')-1)||substr(scr_description,instr(scr_description,'/')+7);
+	ELSE
+		:DISPLAY_ITEM_BLOCK.FORM_DESC := scr_description;
+	END IF;
+--End Fix SCR 101 -- Madhu -- 09-Apr-2012
+	:DISPLAY_ITEM_BLOCK.FORM_DATE_TIME := to_char(sysdate,'DD-MON-YYYY HH24:MI:SS');
+	:DISPLAY_ITEM_BLOCK.FORM_NAME := mname;
+	:DISPLAY_ITEM_BLOCK.FORM_PART_NUMBER := scr_part_number;
+	:DISPLAY_ITEM_BLOCK.TEST_VAR := test_var;BEGIN
+		SELECT data_supplier_name
+		INTO   :DISPLAY_ITEM_BLOCK.FORM_SOURCE
+		FROM   data_supplier
+		WHERE  data_supplier = nvl(:GLOBAL.DATA_SUPPLIER,'T');
+	Exception
+		When no_data_found then
+		:DISPLAY_ITEM_BLOCK.FORM_SOURCE := :GLOBAL.DATA_SUPPLIER;
+	End;	
+IF Name_In('parameter.work_type') = 'VIEW' THEN;	
+SELECT 1 into test_var from dual; END IF;
+  SELECT DECODE(nvl(:parameter.record_type,'S'),'S','STANDARD','T','TAILORED','UNKNOWN')||', '||:parameter.library_access||', '||
+				  DECODE(nvl(:parameter.work_type,'VIEW'),'VIEW','Query Only','Data Entry')
+   INTO   :DISPLAY_ITEM_BLOCK.FORM_RECORD_TYPE
+   FROM   dual;
+END;
+
+ initializeForm:
+PROCEDURE INITIALIZE_FORM IS
+	fname	varchar2(100) := get_application_property(CURRENT_FORM_NAME);
+	v_err  varchar2(300);
+BEGIN
+	default_value('J','global.data_supplier');
+  default_value('99999','global.dcr_number');
+  default_value(null,'global.processing_cycle');
+  default_value('MAXIMIZE','global.Status_Window'); 
+  default_value(null,'global.allroles');
+  /*********************************************************************/
+  /*********************************************************************/
+  /* Global Variables declared Plotting Function- updated as part of scr 2304.00 */
+  -- Declaring Common variables
+  default_value('cpt','global.user_name');
+  default_value('cpt','global.password');
+  default_value('cpt','global.connect_string');
+  default_value('airport','global.data_type');
+  default_value('airport','global.table_name');
+  default_value('blank','global.last_query');
+ -- Updated for Plotting Function
+	:global.user_name := Get_Application_Property(USERNAME);
+  :global.password := Get_Application_Property(PASSWORD);
+  :global.connect_string := Get_Application_Property(CONNECT_STRING);
+  /*********************************************************************/
+  /*********************************************************************/
+  :global.Status_Window := get_window_property('BASE_WINDOW',window_state);
+  if name_in('global.Status_Window') = 'MAXIMIZE' then
+		set_window_property('BASE_WINDOW', window_state, MAXIMIZE);
+	else
+		set_window_property('BASE_WINDOW', window_state, NORMAL);
+	end if;
+  
+  -- activate all roles
+  v_err := set_role(:global.allroles);
+  if v_err != 'PASSED' then
+		-- The roles cannot be activated
+		display_alert.one_button('S','Fatal Error',
+		'The roles cannot be activated.  Contact the COREPT Administrator.');
+		exit_form;
+  else
+--  Continue
+  if :global.processing_cycle is null then
+    begin
+      select max(processing_cycle) 
+      into   :global.processing_cycle
+      from pl_std_airport;
+    exception
+  	  when no_data_found then
+  	   :global.processing_cycle := null;
+    end;
+  end if;
+	/********************************************/
+/********************************************/
+-- Updated for Plotting Function
+	:global.user_name := Get_Application_Property(USERNAME);
+  :global.password := Get_Application_Property(PASSWORD);
+  :global.connect_string := Get_Application_Property(CONNECT_STRING);
+/********************************************/
+/********************************************/
+
+	/* Begin Fix -- Sesha --scr 3392*/
+	set_item_property('DISPLAY_ITEM_BLOCK.PROCESSING_CYCLE',DISPLAYED, PROPERTY_TRUE); -- MOD
+	set_item_property('DISPLAY_ITEM_BLOCK.PROCESSING_CYCLE',WIDTH, 60);								 -- MOD
+	:DISPLAY_ITEM_BLOCK.PROCESSING_CYCLE := :global.processing_cycle;	
+	/* End Fix -- Sesha --scr 3392*/
+	--
+	populate_items(fname);
+	unset_query_menu_items;	
+	end if;
+END;
+
+ dspError:
+PROCEDURE DSP_ERROR(ERR_MSG IN VARCHAR2) IS
+  alert_id    alert;
+  choice      number(3);
+BEGIN
+  set_alert_property('ERROR_MESSAGE', alert_message_text,ERR_MSG); 
+  alert_id := find_alert ('ERROR_MESSAGE');
+  choice := show_alert(alert_id);
+END;
+
+
+ doValidate:
+PROCEDURE do_validate(p_block in varchar2) IS
+BEGIN
+  null;
+END;
+
+ checkPackageFailure:
+Procedure Check_Package_Failure IS
+BEGIN
+  IF NOT ( Form_Success ) THEN
+    RAISE Form_Trigger_Failure;
+  END IF;
+END;
+
+ queryMasterDetails:
+PROCEDURE Query_Master_Details(rel_id Relation,detail VARCHAR2) IS
+  oldmsg VARCHAR2(2);  -- Old Message Level Setting
+  reldef VARCHAR2(5);  -- Relation Deferred Setting
+BEGIN
+  --
+  -- Initialize Local Variable(s)
+  --
+  reldef := Get_Relation_Property(rel_id, DEFERRED_COORDINATION);
+  oldmsg := :System.Message_Level;
+  --
+  -- If NOT Deferred, Goto detail and execute the query.
+  --
+  IF reldef = 'FALSE' THEN
+    Go_Block(detail);
+    Check_Package_Failure;
+    :System.Message_Level := '10';
+    Execute_Query;
+    :System.Message_Level := oldmsg;
+  ELSE
+    --
+    -- Relation is deferred, mark the detail block as un-coordinated
+    --
+    Set_Block_Property(detail, COORDINATION_STATUS, NON_COORDINATED);
+  END IF;
+
+EXCEPTION
+    WHEN Form_Trigger_Failure THEN
+      :System.Message_Level := oldmsg;
+      RAISE;
+END Query_Master_Details;
+
+
+ clearAllMasterDetails:
+PROCEDURE Clear_All_Master_Details IS
+  mastblk  VARCHAR2(30);  -- Initial Master Block Causing Coord
+  coordop  VARCHAR2(30);  -- Operation Causing the Coord
+  trigblk  VARCHAR2(30);  -- Cur Block On-Clear-Details Fires On
+  startitm VARCHAR2(61);  -- Item in which cursor started
+  frmstat  VARCHAR2(15);  -- Form Status
+  curblk   VARCHAR2(30);  -- Current Block
+  currel   VARCHAR2(30);  -- Current Relation
+  curdtl   VARCHAR2(30);  -- Current Detail Block
+
+  FUNCTION First_Changed_Block_Below(Master VARCHAR2)
+  RETURN VARCHAR2 IS
+    curblk VARCHAR2(30);  -- Current Block
+    currel VARCHAR2(30);  -- Current Relation
+    retblk VARCHAR2(30);  -- Return Block
+  BEGIN
+    --
+    -- Initialize Local Vars
+    --
+    curblk := Master;
+    currel := Get_Block_Property(curblk,  FIRST_MASTER_RELATION);
+    --
+    -- While there exists another relation for this block
+    --
+    WHILE currel IS NOT NULL LOOP
+      --
+      -- Get the name of the detail block
+      --
+      curblk := Get_Relation_Property(currel, DETAIL_NAME);
+      --
+      -- If this block has changes, return its name
+      --
+      IF ( Get_Block_Property(curblk, STATUS) = 'CHANGED' ) THEN
+        RETURN curblk;
+      ELSE
+        --
+        -- No changes, recursively look for changed blocks below
+        --
+        retblk := First_Changed_Block_Below(curblk);
+        --
+        -- If some block below is changed, return its name
+        --
+        IF retblk IS NOT NULL THEN
+          RETURN retblk;
+        ELSE
+          --
+          -- Consider the next relation
+          --
+          currel := Get_Relation_Property(currel, NEXT_MASTER_RELATION);
+        END IF;
+      END IF;
+    END LOOP;
+
+    --
+    -- No changed blocks were found
+    --
+    RETURN NULL;
+  END First_Changed_Block_Below;
+
+BEGIN
+  --
+  -- Init Local Vars
+  --
+  mastblk  := :System.Master_Block;
+  coordop  := :System.Coordination_Operation;
+  trigblk  := :System.Trigger_Block;
+  startitm := :System.Cursor_Item;
+  frmstat  := :System.Form_Status;
+
+  --
+  -- If the coordination operation is anything but CLEAR_RECORD or
+  -- SYNCHRONIZE_BLOCKS, then continue checking.
+  --
+  IF coordop NOT IN ('CLEAR_RECORD', 'SYNCHRONIZE_BLOCKS') THEN
+    --
+    -- If we're processing the driving master block...
+    --
+    IF mastblk = trigblk THEN
+      --
+      -- If something in the form is changed, find the
+      -- first changed block below the master
+      --
+      IF frmstat = 'CHANGED' THEN
+        curblk := First_Changed_Block_Below(mastblk);
+        --
+        -- If we find a changed block below, go there
+        -- and Ask to commit the changes.
+        --
+        IF curblk IS NOT NULL THEN
+          Go_Block(curblk);
+          Check_Package_Failure;
+          Clear_Block(ASK_COMMIT);
+          --
+          -- If user cancels commit dialog, raise error
+          --
+          IF NOT ( :System.Form_Status = 'QUERY'
+                   OR :System.Block_Status = 'NEW' ) THEN
+            RAISE Form_Trigger_Failure;
+          END IF;
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+
+  --
+  -- Clear all the detail blocks for this master without
+  -- any further asking to commit.
+  --
+  currel := Get_Block_Property(trigblk, FIRST_MASTER_RELATION);
+  WHILE currel IS NOT NULL LOOP
+    curdtl := Get_Relation_Property(currel, DETAIL_NAME);
+    IF Get_Block_Property(curdtl, STATUS) <> 'NEW'  THEN
+      Go_Block(curdtl);
+      Check_Package_Failure;
+      Clear_Block(NO_VALIDATE);
+      IF :System.Block_Status <> 'NEW' THEN
+        RAISE Form_Trigger_Failure;
+      END IF;
+    END IF;
+    currel := Get_Relation_Property(currel, NEXT_MASTER_RELATION);
+  END LOOP;
+
+  --
+  -- Put cursor back where it started
+  --
+  IF :System.Cursor_Item <> startitm THEN
+    Go_Item(startitm);
+    Check_Package_Failure;
+  END IF;
+
+EXCEPTION
+  WHEN Form_Trigger_Failure THEN
+    IF :System.Cursor_Item <> startitm THEN
+      Go_Item(startitm);
+    END IF;
+    RAISE;
+
+END Clear_All_Master_Details;
+
+
+ checkforalpha:
+PROCEDURE CheckForAlpha(P_Fix IN VARCHAR2) IS
+  --Added for SCR-08708
+  ls_ret NUMBER;
+BEGIN
+  ls_ret:=forms_utilities.Fun_CheckForAlpha(p_fix);
+  IF ls_ret > 0 THEN
+    dsp_msg('Only Alphabets are allowed in this fields. Please check.');
+    raise form_trigger_failure;
+  END IF;
+END;
+
+ funDcr:
+FUNCTION fun_dcr RETURN VARCHAR2 IS
+  ls_navdb VARCHAR2(3);
+BEGIN
+  SELECT navdb_id INTO ls_navdb
+  FROM search_by_navdb_assignee
+  WHERE dcr_number = :global.dcr_number
+  AND data_supplier = :global.data_supplier
+  AND rownum = 1;
+
+  RETURN ls_navdb;
+EXCEPTION
+  WHEN Others THEN
+    RETURN '$';
+END;
+
+FormlevelTriggers:
+ whenValidateItem:
+if rtrim(:BOEING_APF_AIRFRAME_ENGINE.create_dcr_number) is null then
+	select dcr_number_seq.nextval into :BOEING_APF_AIRFRAME_ENGINE.create_dcr_number from dual;
+end if;	 
+
+ whenValidateRecord:
+:BOEING_APF_AIRFRAME_ENGINE.update_dcr_number := :global.dcr_number;
+
+ onPopulateDetails:
+--
+-- Begin default relation declare section
+--
+DECLARE
+  recstat     VARCHAR2(20) := :System.record_status;   
+  startitm    VARCHAR2(61) := :System.cursor_item;   
+  rel_id      Relation;
+--
+-- End default relation declare section
+--
+--
+-- Begin default relation program section
+--
+BEGIN
+  IF ( recstat = 'NEW' or recstat = 'INSERT' ) THEN   
+    RETURN;
+  END IF;
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+  IF ( (:BOEING_AIRFRAME_ENGINE.AIRFRAME is not null) or (:BOEING_AIRFRAME_ENGINE.ENGINE_IDENT is not null) ) THEN   
+    rel_id := Find_Relation('BOEING_AIRFRAME_ENGINE.BOEING_AIRFRAME_BOEING_APF_AIR');   
+    Query_Master_Details(rel_id, 'BOEING_APF_AIRFRAME_ENGINE');   
+  END IF;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+
+  IF ( :System.cursor_item <> startitm ) THEN     
+     Go_Item(startitm);     
+     Check_Package_Failure;     
+  END IF;
+END;
+--
+-- End default relation program section
+--
+
+
+ onCheckDeleteMaster:
+--
+-- Begin default relation declare section
+--
+DECLARE
+  Dummy_Define CHAR(1);
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail declare section
+  --
+  CURSOR BOEING_APF_AIRFRAME_ENGINE_cur IS      
+    SELECT 1 FROM BOEING_APF_AIRFRAME_ENGINE B     
+    WHERE B.AIRFRAME = :BOEING_AIRFRAME_ENGINE.AIRFRAME and B.ENGINE_IDENT = :BOEING_AIRFRAME_ENGINE.ENGINE_IDENT;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail declare section
+  --
+--
+-- End default relation declare section
+--
+--
+-- Begin default relation program section
+--
+BEGIN
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+  OPEN BOEING_APF_AIRFRAME_ENGINE_cur;     
+  FETCH BOEING_APF_AIRFRAME_ENGINE_cur INTO Dummy_Define;     
+  IF ( BOEING_APF_AIRFRAME_ENGINE_cur%found ) THEN     
+    DSP_MSG('Cannot delete master record when matching detail records exist.');     
+    CLOSE BOEING_APF_AIRFRAME_ENGINE_cur;     
+    RAISE Form_Trigger_Failure;     
+  END IF;
+  CLOSE BOEING_APF_AIRFRAME_ENGINE_cur;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+END;
+--
+-- End default relation program section
+--
+
+ keyDelrec:
+IF :parameter.work_type = 'VIEW' then
+	null;
+ELSE
+	if :system.record_status not in ('NEW','INSERT') then
+		if display_alert.more_buttons('S','Delete Record',
+							'You are going to delete this record. Please be sure.'||chr(10)||' ',
+						 'Delete It', 'Cancel') = 1 then
+--Begin Fix -- SCR 0021-- Madhu -- 20-Jan-2012
+			Delete_Record;
+			Commit_Form;
+		else
+			RAISE Form_Trigger_Failure;
+		end if;
+--End Fix -- SCR 0021-- Madhu -- 20-Jan-2012
+	--else
+	--	delete_record;	--	Fix -- SCR 0021-- Madhu -- 20-Jan-2012 -- To commit the changes with in the if block
+	end if;
+--	COMMIT_FORM;--	Fix -- SCR 0021-- Madhu -- 20-Jan-2012 -- To commit the changes with in the if block
+END IF;
+
+ whenNewItemInstance:
+list_values;
+
+ whenButtonPressed:
+if :system.cursor_block = 'WEBUTIL' then 
+	next_block;
+end if;
+WebUtil_Core.ShowBeans(false);
+
+ whenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ onMessage:
+DECLARE
+   msgnum NUMBER       := MESSAGE_CODE; 
+   msgtxt VARCHAR2(80) := MESSAGE_TEXT; 
+   msgtyp VARCHAR2(3)  := MESSAGE_TYPE; 
+BEGIN 
+   IF (msgnum = 40400 or msgnum = 40406 or msgnum = 40407) THEN 
+     CLEAR_MESSAGE;
+     dsp_msg('Record has been saved successfully');--Fix -- SCR 0021 -- Madhu -- 19-Jan-2012 
+   ELSIF msgnum in (41051,40350,47316,40353) then
+   	  null;
+   ELSIF msgnum in (40401, 40405,40404) THEN --Fix -- SCR 0021 -- Madhu -- 20-Jan-2012
+      null;
+   ELSE 
+      display_alert.one_button('S','Error',msgtyp||'-'||TO_CHAR(msgnum)||': '||msgtxt); 
+      raise form_trigger_failure;
+   END IF; 
+END; 
+
+ onError:
+DECLARE
+   msgnum NUMBER       := error_CODE; 
+   msgtxt VARCHAR2(80) := error_TEXT; 
+   msgtyp VARCHAR2(3)  := error_TYPE; 
+BEGIN 
+   IF (msgnum = 40400 or msgnum = 40406 or msgnum = 40407) THEN 
+      Message('Changes saved successfully'); 
+   ELSIF msgnum in (41051, 40350, 47316, 40353) then
+   	  null;
+   ELSIF msgnum in (40401, 40405) THEN 
+      null;
+   ELSIF msgnum = 40100 then
+   		clear_message;
+   		message('At the first record.');
+   ELSIF msgnum = 40735 and msgtxt like '%01031%' then
+   		clear_message;
+   		dsp_msg(msgtxt||' Insufficient privileges. ');
+   ELSIF msgnum in (40508,40509) then
+   		dsp_msg(msgtxt||chr(10)||chr(10)||
+   		'Please check the exact error message from the "Display Error" in the "HELP" menu');
+   		--raise form_trigger_failure; 		
+   ELSE 
+      display_alert.one_button('S','Error',msgtyp||'-'||TO_CHAR(msgnum)||': '||msgtxt); 
+      --raise form_trigger_failure;
+   END IF; 
+END; 
+
+
+ keyExit:
+Set_Application_Property(cursor_style,'DEFAULT');
+Exit_form;
+
+ keyEdit:
+if :parameter.work_type = 'VIEW' then
+	null;
+else
+	edit_field;
+end if;
+
+ keyCrerec:
+if :parameter.work_type = 'VIEW' then
+	null;
+else
+  create_record;
+end if;
+
+ keyDupItem:
+if :parameter.work_type = 'VIEW' then
+	null;
+else
+	duplicate_item;
+end if;
+
+ whenNewFormInstance:
+Initialize_Form;
+set_block;	
+
+ keyEntqry:
+corept_enter_query;
+if :system.mode = 'NORMAL' then
+	unset_query_menu_items;
+end if;
+
+ onClearDetails:
+--
+-- Begin default relation program section
+--
+BEGIN
+  Clear_All_Master_Details;
+END;
+--
+-- End default relation program section
+--
+
+
+ keyDuprec:
+if :parameter.work_type = 'VIEW' then
+	null;
+else
+	if name_in(:system.cursor_block||'.AIRFRAME') is not null then
+		create_record;
+	end if;	
+	duplicate_record;
+	copy(null,:system.cursor_block||'.create_dcr_number');
+	copy(null,:system.cursor_block||'.update_dcr_number');	
+end if;
+
+ keyCommit:
+IF :System.Form_Status IN ('CHANGED','NEW') THEN -- Fix -- SCR 0021 -- 20-JAN-2012 -- Madhu
+-- Begin Fix -- SCR 0021 -- 19-JAN-2012 -- Madhu
+	IF display_alert.more_buttons('S','Save Record',
+			'Do you wish to Save the Record.'||chr(10)||' ',
+			'Save', 'Cancel') = 1 then
+			Commit_Form;
+	END IF;
+-- End Fix -- SCR 0021 -- 19-JAN-2012 -- Madhu
+END IF;-- Fix -- SCR 0021 -- 20-JAN-2012 -- Madhu
+
+
+BlocklevelTriggers:
+ boeingAirframeEnginewhenValidateItem:
+if rtrim(:BOEING_AIRFRAME_ENGINE.create_dcr_number) is null then
+	select dcr_number_seq.nextval into :BOEING_AIRFRAME_ENGINE.create_dcr_number from dual;
+end if;	 
+
+ boeingAirframeEnginewhenValidateRecord:
+:BOEING_AIRFRAME_ENGINE.update_dcr_number := :global.dcr_number;
+
+ boeingAirframeEngineonPopulateDetails:
+--
+-- Begin default relation declare section
+--
+DECLARE
+  recstat     VARCHAR2(20) := :System.record_status;   
+  startitm    VARCHAR2(61) := :System.cursor_item;   
+  rel_id      Relation;
+--
+-- End default relation declare section
+--
+--
+-- Begin default relation program section
+--
+BEGIN
+  IF ( recstat = 'NEW' or recstat = 'INSERT' ) THEN   
+    RETURN;
+  END IF;
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+  IF ( (:BOEING_AIRFRAME_ENGINE.AIRFRAME is not null) or (:BOEING_AIRFRAME_ENGINE.ENGINE_IDENT is not null) ) THEN   
+    rel_id := Find_Relation('BOEING_AIRFRAME_ENGINE.BOEING_AIRFRAME_BOEING_APF_AIR');   
+    Query_Master_Details(rel_id, 'BOEING_APF_AIRFRAME_ENGINE');   
+  END IF;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+
+  IF ( :System.cursor_item <> startitm ) THEN     
+     Go_Item(startitm);     
+     Check_Package_Failure;     
+  END IF;
+END;
+--
+-- End default relation program section
+--
+
+
+ boeingAirframeEngineonCheckDeleteMaster:
+--
+-- Begin default relation declare section
+--
+DECLARE
+  Dummy_Define CHAR(1);
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail declare section
+  --
+  CURSOR BOEING_APF_AIRFRAME_ENGINE_cur IS      
+    SELECT 1 FROM BOEING_APF_AIRFRAME_ENGINE B     
+    WHERE B.AIRFRAME = :BOEING_AIRFRAME_ENGINE.AIRFRAME and B.ENGINE_IDENT = :BOEING_AIRFRAME_ENGINE.ENGINE_IDENT;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail declare section
+  --
+--
+-- End default relation declare section
+--
+--
+-- Begin default relation program section
+--
+BEGIN
+  --
+  -- Begin BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+  OPEN BOEING_APF_AIRFRAME_ENGINE_cur;     
+  FETCH BOEING_APF_AIRFRAME_ENGINE_cur INTO Dummy_Define;     
+  IF ( BOEING_APF_AIRFRAME_ENGINE_cur%found ) THEN     
+    DSP_MSG('Cannot delete master record when matching detail records exist.');     
+    CLOSE BOEING_APF_AIRFRAME_ENGINE_cur;     
+    RAISE Form_Trigger_Failure;     
+  END IF;
+  CLOSE BOEING_APF_AIRFRAME_ENGINE_cur;
+  --
+  -- End BOEING_APF_AIRFRAME_ENGINE detail program section
+  --
+END;
+--
+-- End default relation program section
+--
+
+ boeingAirframeEnginekeyDelrec:
+IF :parameter.work_type = 'VIEW' then
+	null;
+else	
+	if :BOEING_APF_AIRFRAME_ENGINE.NAVDB_ID is not null then
+		if display_alert.more_buttons('S','Delete Record',
+			'Please be sure you want to delete the current record and its associated detail record.'||chr(10)||' ',
+			'Delete All', 'Cancel') = 1 then
+			go_block('BOEING_APF_AIRFRAME_ENGINE');
+			first_record;
+			loop
+				Delete_Record;
+				exit when :system.last_record = 'TRUE';
+			end loop;
+			Delete_Record;
+			go_block('BOEING_AIRFRAME_ENGINE');
+			Post;--Fix -- SCR 0021 -- Madhu -- 20-Jan-2012
+			--commit_form;--Fix -- SCR 0021 -- Madhu -- 20-Jan-2012 -- To supress the alert
+			Delete_Record;
+			Commit_Form;
+			DSP_MSG('Action has been commited.');
+		end if;			
+		else	
+--Begin Fix -- SCR 0021 -- Madhu -- 20-Jan-2012
+		if :system.record_status not in ('NEW','INSERT') then
+			if display_alert.more_buttons('S','Delete Record',
+							'You are going to delete this record. Please be sure.'||chr(10)||' ', -- Fix -- SCR 0021 -- Madhu -- 20-Jan-2012 -- Going Spell was corrected
+						 'Delete It', 'Cancel') = 1 then
+						 Delete_Record;
+		         Commit_Form;
+			else
+				RAISE Form_Trigger_Failure;
+			end if;
+--End Fix -- SCR 0021 -- Madhu -- 20-Jan-2012
+		end if;
+		--DELETE_RECORD;--Fix -- SCR 0021 -- Madhu -- 20-Jan-2012-- To commit the changes with in the if block
+		--COMMIT_FORM;--Fix -- SCR 0021 -- Madhu -- 20-Jan-2012-- To commit the changes with in the if block
+	end if;
+end if;	
+
+ boeingApfAirframeEnginewhenValidateItem:
+if rtrim(:BOEING_APF_AIRFRAME_ENGINE.create_dcr_number) is null then
+	select dcr_number_seq.nextval into :BOEING_APF_AIRFRAME_ENGINE.create_dcr_number from dual;
+end if;	 
+
+ boeingApfAirframeEnginewhenValidateRecord:
+:BOEING_APF_AIRFRAME_ENGINE.update_dcr_number := :global.dcr_number;
+
+ boeingApfAirframeEnginekeyDelrec:
+IF :parameter.work_type = 'VIEW' then
+	null;
+ELSE
+	if :system.record_status not in ('NEW','INSERT') then
+		if display_alert.more_buttons('S','Delete Record',
+							'You are going to delete this record. Please be sure.'||chr(10)||' ',
+						 'Delete It', 'Cancel') = 1 then
+--Begin Fix -- SCR 0021-- Madhu -- 20-Jan-2012
+			Delete_Record;
+			Commit_Form;
+		else
+			RAISE Form_Trigger_Failure;
+		end if;
+--End Fix -- SCR 0021-- Madhu -- 20-Jan-2012
+	--else
+	--	delete_record;	--	Fix -- SCR 0021-- Madhu -- 20-Jan-2012 -- To commit the changes with in the if block
+	end if;
+--	COMMIT_FORM;--	Fix -- SCR 0021-- Madhu -- 20-Jan-2012 -- To commit the changes with in the if block
+END IF;
+
+ displayItemBlockwhenNewItemInstance:
+list_values;
+
+ webutilwhenButtonPressed:
+if :system.cursor_block = 'WEBUTIL' then 
+	next_block;
+end if;
+WebUtil_Core.ShowBeans(false);
+
+ webutilwhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ItemlevelTriggers:
+ boeingAirframeEnginecreateDcrNumberwhenValidateItem:
+if rtrim(:BOEING_AIRFRAME_ENGINE.create_dcr_number) is null then
+	select dcr_number_seq.nextval into :BOEING_AIRFRAME_ENGINE.create_dcr_number from dual;
+end if;	 
+
+ boeingApfAirframeEnginecreateDcrNumberwhenValidateItem:
+if rtrim(:BOEING_APF_AIRFRAME_ENGINE.create_dcr_number) is null then
+	select dcr_number_seq.nextval into :BOEING_APF_AIRFRAME_ENGINE.create_dcr_number from dual;
+end if;	 
+
+ displayItemBlockformPartNumberwhenNewItemInstance:
+list_values;
+
+ webutildummywhenButtonPressed:
+if :system.cursor_block = 'WEBUTIL' then 
+	next_block;
+end if;
+WebUtil_Core.ShowBeans(false);
+
+ webutilwebutilClientinfoFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilFileFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilHostFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilSessionFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilFiletransferFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilOleFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilCApiFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
+ webutilwebutilBrowserFunctionswhenCustomItemEvent:
+begin
+  WEBUTIL_CORE.CustomEventHandler(:SYSTEM.CUSTOM_ITEM_EVENT,:SYSTEM.CUSTOM_ITEM_EVENT_PARAMETERS);
+end;
+  
+
